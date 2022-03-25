@@ -209,18 +209,14 @@ impl RadixKey for Transparent2d {
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        self.sort_key.get_level(level)
+        let s = self.sort_key.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 
 impl PhaseItem for Transparent2d {
-    type SortKey = f32;
-
-    #[inline]
-    fn sort_key(&self) -> Self::SortKey {
-        self.sort_key
-    }
-
     #[inline]
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function
@@ -264,18 +260,14 @@ impl RadixKey for Opaque3d {
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        self.distance.get_level(level)
+        let s = self.distance.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 
 impl PhaseItem for Opaque3d {
-    type SortKey = f32;
-
-    #[inline]
-    fn sort_key(&self) -> Self::SortKey {
-        self.distance
-    }
-
     #[inline]
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function
@@ -309,18 +301,14 @@ impl RadixKey for AlphaMask3d {
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        self.distance.get_level(level)
+        let s = self.distance.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 
 impl PhaseItem for AlphaMask3d {
-    type SortKey = f32;
-
-    #[inline]
-    fn sort_key(&self) -> Self::SortKey {
-        self.distance
-    }
-
     #[inline]
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function
@@ -354,18 +342,14 @@ impl RadixKey for Transparent3d {
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        self.distance.get_level(level)
+        let s = self.distance.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 
 impl PhaseItem for Transparent3d {
-    type SortKey = f32;
-
-    #[inline]
-    fn sort_key(&self) -> Self::SortKey {
-        self.distance
-    }
-
     #[inline]
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function

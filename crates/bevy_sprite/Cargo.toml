@@ -33,5 +33,5 @@ serde = { version = "1", features = ["derive"] }
 bitflags = "1.2"
 copyless = "0.1.5"
 # radsort = "0.1.0"
-rdst = { git = "https://github.com/Nessex/rdst.git", branch = "nessex-multi-threaded-feature", default-features = false }
+rdst = { path = "../../../../Nessex/rdst", default-features = false }
 # voracious_radix_sort = { version = "1.1.0", features = ["voracious_multithread"] }

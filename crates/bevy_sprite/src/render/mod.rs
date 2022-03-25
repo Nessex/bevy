@@ -185,23 +185,14 @@ pub struct ExtractedSprite {
 }
 
 impl RadixKey for ExtractedSprite {
-    const LEVELS: usize = 20;
+    const LEVELS: usize = 4;
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        if level < 4 {
-            self.transform.translation.z.get_level(level)
-        } else if level < 12 {
-            match self.image_handle_id {
-                HandleId::Id(uuid, _) => uuid.as_u128().get_level(level - 4),
-                HandleId::AssetPathId(id) => id.source_path_id().value().get_level(level - 4),
-            }
-        } else {
-            match self.image_handle_id {
-                HandleId::Id(_, id) => id.get_level(level - 12),
-                HandleId::AssetPathId(id) => id.label_id().value().get_level(level - 12),
-            }
-        }
+        let s = self.transform.translation.z.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 

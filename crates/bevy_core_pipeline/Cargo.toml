@@ -24,4 +24,4 @@ bevy_ecs = { path = "../bevy_ecs", version = "0.7.0-dev" }
 bevy_render = { path = "../bevy_render", version = "0.7.0-dev" }
 bevy_utils = { path = "../bevy_utils", version = "0.7.0-dev" }
 
-rdst = { git = "https://github.com/Nessex/rdst.git", branch = "nessex-multi-threaded-feature", default-features = false }
+rdst = { path = "../../../../Nessex/rdst", default-features = false }

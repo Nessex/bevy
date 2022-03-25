@@ -111,18 +111,14 @@ impl RadixKey for TransparentUi {
     const LEVELS: usize = 4;
 
     fn get_level(&self, level: usize) -> u8 {
-        self.sort_key.get_level(level)
+        let s = self.sort_key.to_bits();
+        let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+        (u >> (level * 8)) as u8
     }
 }
 
 impl PhaseItem for TransparentUi {
-    type SortKey = f32;
-
-    #[inline]
-    fn sort_key(&self) -> Self::SortKey {
-        self.sort_key
-    }
-
     #[inline]
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function

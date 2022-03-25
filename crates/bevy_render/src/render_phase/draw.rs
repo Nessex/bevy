@@ -14,6 +14,7 @@ use bevy_ecs::{
 use bevy_utils::HashMap;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{any::TypeId, fmt::Debug, hash::Hash, ops::Range};
+use rdst::RadixKey;
 
 /// A draw function which is used to draw a specific [`PhaseItem`].
 ///
@@ -36,10 +37,6 @@ pub trait Draw<P: PhaseItem>: Send + Sync + 'static {
 /// [`RenderStage::PhaseSort`](crate::RenderStage::PhaseSort) stage and
 /// [`RenderStage::Render`](crate::RenderStage::Render) stage, respectively.
 pub trait PhaseItem: Send + Sync + 'static {
-    /// The type used for ordering the items. The smallest values are drawn first.
-    type SortKey: rdst::RadixKey;
-    /// Determines the order in which the items are drawn during the corresponding [`RenderPhase`](super::RenderPhase).
-    fn sort_key(&self) -> Self::SortKey;
     /// Specifies the [`Draw`] function used to render the item.
     fn draw_function(&self) -> DrawFunctionId;
 }

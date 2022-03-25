@@ -8,6 +8,7 @@ use bevy_ecs::prelude::{Component, Query};
 
 use copyless::VecHelper;
 use rdst::{RadixKey, RadixSort};
+use rdst::tuner::{Algorithm, Tuner, TuningParams};
 
 /// A resource to collect and sort draw requests for specific [`PhaseItems`](PhaseItem).
 #[derive(Component)]
@@ -21,6 +22,18 @@ impl<I: PhaseItem> Default for RenderPhase<I> {
     }
 }
 
+pub struct RenderPhaseTuner;
+impl Tuner for RenderPhaseTuner {
+    #[inline]
+    fn pick_algorithm(&self, p: &TuningParams, _: &[usize]) -> Algorithm {
+        if p.input_len <= 256 {
+            return Algorithm::Comparative;
+        }
+
+        return Algorithm::LrLsb;
+    }
+}
+
 impl<I: PhaseItem + RadixKey + Copy> RenderPhase<I> {
     /// Adds a [`PhaseItem`] to this render phase.
     #[inline]
@@ -29,8 +42,12 @@ impl<I: PhaseItem + RadixKey + Copy> RenderPhase<I> {
     }
 
     /// Sorts all of its [`PhaseItems`](PhaseItem).
+    #[inline]
     pub fn sort(&mut self) {
-        self.items.radix_sort_unstable();
+        // println!("LEN: {}", self.items.len());
+        self.items.radix_sort_builder()
+            .with_tuner(&RenderPhaseTuner)
+            .sort();
     }
 }
 
@@ -96,16 +113,13 @@ mod tests {
 
             #[inline]
             fn get_level(&self, level: usize) -> u8 {
-                self.sort_key().get_level(level)
+                let s = 0.0f32.to_bits();
+                let u = if s >> 31 == 1 { !s } else { s ^ (1 << 31) };
+
+                (u >> (level * 8)) as u8
             }
         }
         impl PhaseItem for TestPhaseItem {
-            type SortKey = f32;
-
-            fn sort_key(&self) -> Self::SortKey {
-                0.0f32
-            }
-
             fn draw_function(&self) -> DrawFunctionId {
                 unimplemented!();
             }
