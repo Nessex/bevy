@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::Instant;
 
 use crate::{
     texture_atlas::{TextureAtlas, TextureAtlasSprite},
@@ -30,6 +31,7 @@ use bevy_transform::components::GlobalTransform;
 use bevy_utils::HashMap;
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
+use rdst::{RadixKey, RadixSort};
 
 pub struct SpritePipeline {
     view_layout: BindGroupLayout,
@@ -329,6 +331,17 @@ pub struct ImageBindGroups {
     values: HashMap<Handle<Image>, BindGroup>,
 }
 
+#[derive(Clone, Copy)]
+struct ExtractedSpriteWithKey<'a>(u128, &'a ExtractedSprite);
+
+impl RadixKey for ExtractedSpriteWithKey<'_> {
+    const LEVELS: usize = 16;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.0.get_level(level)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn queue_sprites(
     mut commands: Commands,
@@ -393,17 +406,26 @@ pub fn queue_sprites(
             transparent_phase.items.reserve(extracted_sprites.len());
 
             // Sort sprites by z for correct transparency and then by handle to improve batching
-            extracted_sprites.sort_unstable_by(|a, b| {
-                match a
-                    .transform
-                    .translation
-                    .z
-                    .partial_cmp(&b.transform.translation.z)
-                {
-                    Some(Ordering::Equal) | None => a.image_handle_id.cmp(&b.image_handle_id),
-                    Some(other) => other,
-                }
-            });
+            let mut extracted_sprites_sortable: Vec<ExtractedSpriteWithKey> =
+                extracted_sprites.iter().map(|s| {
+                    let mut sort_key = (s.transform.translation.z as u128) << 64;
+
+                    let sort_key_lower = match s.image_handle_id {
+                        HandleId::Id(uuid, id) => {
+                            (uuid.as_u128() as u64) ^ ((uuid.as_u128() >> 64) as u64) ^ id
+                        }
+                        HandleId::AssetPathId(id) => {
+                            id.source_path_id().value() ^ id.label_id().value()
+                        }
+                    };
+
+                    sort_key |= sort_key_lower as u128;
+
+                    ExtractedSpriteWithKey(sort_key, s)
+                }).collect();
+
+            extracted_sprites_sortable.sort_unstable_by_key(|s| s.0);
+            //extracted_sprites_sortable.radix_sort_unstable();
 
             // Impossible starting values that will be replaced on the first iteration
             let mut current_batch = SpriteBatch {
@@ -417,7 +439,8 @@ pub fn queue_sprites(
             // Compatible items share the same entity.
             // Batches are merged later (in `batch_phase_system()`), so that they can be interrupted
             // by any other phase item (and they can interrupt other items from batching).
-            for extracted_sprite in extracted_sprites.iter() {
+            // for extracted_sprite in extracted_sprites.iter() {
+            for ExtractedSpriteWithKey(_, extracted_sprite) in extracted_sprites_sortable.into_iter() {
                 let new_batch = SpriteBatch {
                     image_handle_id: extracted_sprite.image_handle_id,
                     colored: extracted_sprite.color != Color::WHITE,

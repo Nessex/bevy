@@ -7,6 +7,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
+impl SourcePathId {
+    #[inline]
+    pub fn value(&self) -> u64 {
+        self.0
+    }
+}
+
+impl LabelId {
+    #[inline]
+    pub fn value(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
 pub struct AssetPath<'a> {
     path: Cow<'a, Path>,
