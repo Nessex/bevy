@@ -27,9 +27,22 @@ impl<I: PhaseItem> RenderPhase<I> {
         self.items.alloc().init(item);
     }
 
+    // Temporary alternative to Vec::is_sorted until it is stabilized
+    fn is_sorted(&self) -> bool {
+        for w in self.items.windows(2) {
+            if w[0].sort_key() > w[1].sort_key() {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// Sorts all of its [`PhaseItems`](PhaseItem).
     pub fn sort(&mut self) {
-        self.items.sort_by_key(|d| d.sort_key());
+        if !self.is_sorted() {
+            self.items.sort_by_key(|d| d.sort_key());
+        }
     }
 }
 
