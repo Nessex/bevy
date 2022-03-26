@@ -51,11 +51,13 @@ impl<I: PhaseItem + RadixKey + Copy> RenderPhase<I> {
     /// Sorts all of its [`PhaseItems`](PhaseItem).
     #[inline]
     pub fn sort(&mut self) {
-        if self.items.revision() == self.sorted_revision {
+        let rev = self.items.revision();
+        if rev == self.sorted_revision {
             return;
         }
 
         self.items.radix_sort_unstable();
+        self.sorted_revision = rev;
     }
 }
 
