@@ -66,4 +66,5 @@ flate2 = { version = "1.0.22", optional = true }
 ruzstd = { version = "0.2.4", optional = true }
 # For transcoding of UASTC/ETC1S universal formats, and for .basis file support
 basis-universal = { version = "0.2.0", optional = true }
-rdst = { path = "../../../../Nessex/rdst", default-features = false }
+rdst = { version = "0.20.0", default-features = false }
+change-tracking-vec = { git = "https://github.com/Nessex/change-tracking-vec.git" }

@@ -1,6 +1,7 @@
 mod draw;
 mod draw_state;
 
+use change_tracking_vec::ChangeTrackingVec;
 pub use draw::*;
 pub use draw_state::*;
 
@@ -13,12 +14,18 @@ use rdst::tuner::{Algorithm, Tuner, TuningParams};
 /// A resource to collect and sort draw requests for specific [`PhaseItems`](PhaseItem).
 #[derive(Component)]
 pub struct RenderPhase<I: PhaseItem> {
-    pub items: Vec<I>,
+    pub items: ChangeTrackingVec<I>,
+    pub sorted_revision: usize,
 }
 
 impl<I: PhaseItem> Default for RenderPhase<I> {
     fn default() -> Self {
-        Self { items: Vec::new() }
+        let items = ChangeTrackingVec::new();
+        let sorted_revision = items.revision();
+        Self {
+            items,
+            sorted_revision,
+        }
     }
 }
 
@@ -38,16 +45,17 @@ impl<I: PhaseItem + RadixKey + Copy> RenderPhase<I> {
     /// Adds a [`PhaseItem`] to this render phase.
     #[inline]
     pub fn add(&mut self, item: I) {
-        self.items.alloc().init(item);
+        self.items.inner_mut().alloc().init(item);
     }
 
     /// Sorts all of its [`PhaseItems`](PhaseItem).
     #[inline]
     pub fn sort(&mut self) {
-        // println!("LEN: {}", self.items.len());
-        self.items.radix_sort_builder()
-            .with_tuner(&RenderPhaseTuner)
-            .sort();
+        if self.items.revision() == self.sorted_revision {
+            return;
+        }
+
+        self.items.radix_sort_unstable();
     }
 }
 
