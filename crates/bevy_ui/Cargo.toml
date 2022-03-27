@@ -33,4 +33,4 @@ stretch = "0.3.2"
 serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1.6", features = ["union", "const_generics"] }
 bytemuck = { version = "1.5", features = ["derive"] }
-rdst = { version = "0.20.1", default-features = false }
+rdst = { version = "0.20.2", default-features = false }

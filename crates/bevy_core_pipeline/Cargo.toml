@@ -24,4 +24,4 @@ bevy_ecs = { path = "../bevy_ecs", version = "0.7.0-dev" }
 bevy_render = { path = "../bevy_render", version = "0.7.0-dev" }
 bevy_utils = { path = "../bevy_utils", version = "0.7.0-dev" }
 
-rdst = { version = "0.20.1", default-features = false }
+rdst = { version = "0.20.2", default-features = false }
