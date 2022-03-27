@@ -34,5 +34,5 @@ bitflags = "1.2"
 copyless = "0.1.5"
 rdst = { version = "0.20.1", default-features = false }
 partition = "0.1.2"
-fxhash = "0.2"
+ahash = "0.7.0"
 intmap = "0.7.1"

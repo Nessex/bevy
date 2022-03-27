@@ -2,6 +2,7 @@ use std::borrow::BorrowMut;
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Instant;
+use ahash::AHasher;
 
 use crate::{
     texture_atlas::{TextureAtlas, TextureAtlasSprite},
@@ -32,7 +33,6 @@ use bevy_transform::components::GlobalTransform;
 use bevy_utils::{FullPassHasher, FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
-use fxhash::{FxHasher, FxHashMap};
 use partition::{partition, partition_index};
 use rdst::{RadixKey, RadixSort};
 use bevy_render::render_phase::BatchRange;
@@ -427,27 +427,26 @@ pub fn queue_sprites(
             let start = Instant::now();
             // Sort sprites by z for correct transparency and then by handle to improve batching
 
-            let mut batch_keys: FullPreHashMap<SpriteBatch> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
-
+            let mut batch_key_map: FullPreHashMap<SpriteBatch> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
             let hash = Instant::now();
-            let extracted_sprites: Vec<_> = extracted_sprites
-                .into_iter()
+            let batch_keys: Vec<_> = extracted_sprites
+                .iter()
                 .map(|extracted_sprite| {
                     let batch = SpriteBatch {
                         image_handle_id: extracted_sprite.image_handle_id,
                         colored: extracted_sprite.color != Color::WHITE,
                     };
 
-                    let mut hasher = FxHasher::default();
+                    let mut hasher = AHasher::default();
 
                     hasher.write_u32(extracted_sprite.transform.translation.z.to_bits());
                     batch.hash(&mut hasher);
 
                     let batch_key = hasher.finish();
 
-                    batch_keys.insert(batch_key, batch);
+                    batch_key_map.insert(batch_key, batch);
 
-                    (batch_key, extracted_sprite)
+                    batch_key
                 })
                 .collect();
             println!("Hash: {}us", hash.elapsed().as_micros());
@@ -455,10 +454,10 @@ pub fn queue_sprites(
             let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
 
             let spawn_batches = Instant::now();
-            batch_keys
+            batch_key_map
                 .into_iter()
-                .map(|(k, batch)| {
-                    let image = gpu_images
+                .for_each(|(k, batch)| {
+                    gpu_images
                         .get(&Handle::weak(batch.image_handle_id))
                         .map(|gpu_image| {
                             let size = Vec2::new(gpu_image.size.width, gpu_image.size.height);
@@ -487,14 +486,10 @@ pub fn queue_sprites(
                                 });
 
                             (entity, size)
+                        })
+                        .map(|img| {
+                            batch_entities.insert(k, img);
                         });
-
-                    (k, image)
-                })
-                .for_each(|(k, img)| {
-                    if let Some(img) = img {
-                        batch_entities.insert(k, img);
-                    }
                 });
 
             println!("Spawn batches: {}us", spawn_batches.elapsed().as_micros());
@@ -505,7 +500,8 @@ pub fn queue_sprites(
             let mut new_extracted_sprites = Vec::with_capacity(extracted_sprites.len());
             extracted_sprites
                 .into_iter()
-                .for_each(|(batch_key, extracted_sprite)| {
+                .zip(batch_keys.into_iter())
+                .for_each(|(extracted_sprite, batch_key)| {
                     let _ = batch_entities
                         .get(&batch_key)
                         .map(|(_, image_size)| {
@@ -605,8 +601,7 @@ pub fn queue_sprites(
 
             let phase_add = Instant::now();
             no_color_iter
-                .into_iter()
-                .chain(color_iter.into_iter())
+                .chain(color_iter)
                 .for_each(|(batch_key, z, pipeline, item_start, item_end)| {
                     let sort_key = *z;
 
