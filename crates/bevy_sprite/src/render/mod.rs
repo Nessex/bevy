@@ -30,9 +30,10 @@ use bevy_render::{
     RenderWorld,
 };
 use bevy_transform::components::GlobalTransform;
-use bevy_utils::{FullPassHasher, FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
+use bevy_utils::{Entry, FullPassHasher, FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
+use fxhash::FxHasher;
 use partition::{partition, partition_index};
 use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
@@ -178,7 +179,6 @@ impl SpecializedRenderPipeline for SpritePipeline {
     }
 }
 
-#[derive(Component, Clone, Copy)]
 pub struct ExtractedSprite {
     pub transform: GlobalTransform,
     pub color: Color,
@@ -191,14 +191,6 @@ pub struct ExtractedSprite {
     pub image_handle_id: HandleId,
     pub flip_x: bool,
     pub flip_y: bool,
-}
-
-impl RadixKey for ExtractedSprite {
-    const LEVELS: usize = 4;
-
-    fn get_level(&self, level: usize) -> u8 {
-        self.transform.translation.z.get_level(level)
-    }
 }
 
 #[derive(Default)]
@@ -353,17 +345,6 @@ pub struct ImageBindGroups {
     values: HashMap<Handle<Image>, BindGroup>,
 }
 
-#[derive(Clone, Copy)]
-struct ExtractedSpriteWithKey<'a>(u128, &'a ExtractedSprite);
-
-impl RadixKey for ExtractedSpriteWithKey<'_> {
-    const LEVELS: usize = 16;
-
-    fn get_level(&self, level: usize) -> u8 {
-        self.0.get_level(level)
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn queue_sprites(
     mut commands: Commands,
@@ -422,7 +403,6 @@ pub fn queue_sprites(
 
         // FIXME: VisibleEntities is ignored
         for mut transparent_phase in views.iter_mut() {
-            let extracted_sprites = &mut extracted_sprites.sprites;
             let image_bind_groups = &mut *image_bind_groups;
 
             let start = Instant::now();
@@ -430,6 +410,7 @@ pub fn queue_sprites(
 
             let hash = Instant::now();
             let batch_keys: Vec<_> = extracted_sprites
+                .sprites
                 .par_iter()
                 .map(|extracted_sprite| {
                     let batch = SpriteBatch {
@@ -437,67 +418,66 @@ pub fn queue_sprites(
                         colored: extracted_sprite.color != Color::WHITE,
                     };
 
-                    let mut hasher = AHasher::default();
+                    let mut hasher = FxHasher::default();
 
                     hasher.write_u32(extracted_sprite.transform.translation.z.to_bits());
                     batch.hash(&mut hasher);
 
-                    let batch_key = hasher.finish();
-
-                    batch_key
+                    hasher.finish()
                 })
                 .collect();
             println!("Hash: {}us", hash.elapsed().as_micros());
 
-            let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
+            let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.sprites.len(), FullPassHasher::default());
 
             let spawn_batches = Instant::now();
             batch_keys
                 .iter()
                 .enumerate()
                 .for_each(|(e, k)| {
-                    if batch_entities.contains_key(k) {
-                        return;
-                    }
+                    match batch_entities.entry(*k) {
+                        hashbrown::hash_map::Entry::Occupied(_) => {},
+                        hashbrown::hash_map::Entry::Vacant(v) => {
+                            let batch = SpriteBatch {
+                                image_handle_id: extracted_sprites.sprites[e].image_handle_id,
+                                colored: extracted_sprites.sprites[e].color != Color::WHITE,
+                            };
 
-                    let batch = SpriteBatch {
-                        image_handle_id: extracted_sprites[e].image_handle_id,
-                        colored: extracted_sprites[e].color != Color::WHITE,
-                    };
+                            gpu_images
+                                .get(&Handle::weak(batch.image_handle_id))
+                                .map(|gpu_image| {
+                                    let size = Vec2::new(gpu_image.size.width, gpu_image.size.height);
+                                    let entity = commands.spawn_bundle((batch,)).id();
 
-                    gpu_images
-                        .get(&Handle::weak(batch.image_handle_id))
-                        .map(|gpu_image| {
-                            let size = Vec2::new(gpu_image.size.width, gpu_image.size.height);
-                            let entity = commands.spawn_bundle((batch,)).id();
+                                    image_bind_groups
+                                        .values
+                                        .entry(Handle::weak(batch.image_handle_id))
+                                        .or_insert_with(|| {
+                                            render_device.create_bind_group(&BindGroupDescriptor {
+                                                entries: &[
+                                                    BindGroupEntry {
+                                                        binding: 0,
+                                                        resource: BindingResource::TextureView(
+                                                            &gpu_image.texture_view,
+                                                        ),
+                                                    },
+                                                    BindGroupEntry {
+                                                        binding: 1,
+                                                        resource: BindingResource::Sampler(&gpu_image.sampler),
+                                                    },
+                                                ],
+                                                label: Some("sprite_material_bind_group"),
+                                                layout: &sprite_pipeline.material_layout,
+                                            })
+                                        });
 
-                            image_bind_groups
-                                .values
-                                .entry(Handle::weak(batch.image_handle_id))
-                                .or_insert_with(|| {
-                                    render_device.create_bind_group(&BindGroupDescriptor {
-                                        entries: &[
-                                            BindGroupEntry {
-                                                binding: 0,
-                                                resource: BindingResource::TextureView(
-                                                    &gpu_image.texture_view,
-                                                ),
-                                            },
-                                            BindGroupEntry {
-                                                binding: 1,
-                                                resource: BindingResource::Sampler(&gpu_image.sampler),
-                                            },
-                                        ],
-                                        label: Some("sprite_material_bind_group"),
-                                        layout: &sprite_pipeline.material_layout,
-                                    })
+                                    (entity, size)
+                                })
+                                .map(|img| {
+                                    v.insert(img);
                                 });
-
-                            (entity, size)
-                        })
-                        .map(|img| {
-                            batch_entities.insert(*k, img);
-                        });
+                        }
+                    }
                 });
 
             println!("Spawn batches: {}us", spawn_batches.elapsed().as_micros());
@@ -506,7 +486,8 @@ pub fn queue_sprites(
 
             // Extract UVs and positions for each sprite
             let mut new_extracted_sprites: Vec<_> = extracted_sprites
-                .into_par_iter()
+                .sprites
+                .par_iter()
                 .zip(batch_keys.into_par_iter())
                 .filter_map(|(extracted_sprite, batch_key)| {
                     batch_entities
@@ -585,7 +566,13 @@ pub fn queue_sprites(
                     colored_index += QUAD_INDICES.len() as u32;
                     let item_end = colored_index;
 
-                    (entity, z, colored_pipeline, item_start, item_end)
+                    Transparent2d {
+                        draw_function: draw_sprite_function,
+                        pipeline: colored_pipeline,
+                        entity: *entity,
+                        sort_key: *z,
+                        batch_range: Some(BatchRange::new(item_start, item_end)),
+                    }
                 });
 
             // Submit non-colored vertices
@@ -598,26 +585,25 @@ pub fn queue_sprites(
                             uv: uvs[*i].into(),
                         });
                     }
+
                     let item_start = index;
                     index += QUAD_INDICES.len() as u32;
                     let item_end = index;
 
-                    (entity, z, pipeline, item_start, item_end)
-                });
-
-            no_color_iter
-                .chain(color_iter)
-                .for_each(|(entity, z, pipeline, item_start, item_end)| {
-                    // TODO(nathan): Not easy to reserve space in transparent_phase for
-                    // entities which have an image ready.
-                    transparent_phase.add(Transparent2d {
+                    Transparent2d {
                         draw_function: draw_sprite_function,
                         pipeline,
                         entity: *entity,
                         sort_key: *z,
                         batch_range: Some(BatchRange::new(item_start, item_end)),
-                    });
+                    }
                 });
+
+            transparent_phase.items.reserve(no_color_iter.len() + color_iter.len());
+
+            color_iter
+                .chain(no_color_iter)
+                .for_each(|t2d| transparent_phase.add(t2d));
             println!("Phase add: {}us", phase_add.elapsed().as_micros());
 
             // extracted_sprites.sort_unstable_by_key(|s| s.transform.translation.z);
