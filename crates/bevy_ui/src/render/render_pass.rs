@@ -1,3 +1,4 @@
+use rdst::RadixKey;
 use bevy_core::FloatOrd;
 use bevy_ecs::{
     prelude::*,
@@ -99,15 +100,24 @@ impl Node for UiPassNode {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct TransparentUi {
-    pub sort_key: FloatOrd,
+    pub sort_key: f32,
     pub entity: Entity,
     pub pipeline: CachedRenderPipelineId,
     pub draw_function: DrawFunctionId,
 }
 
+impl RadixKey for TransparentUi {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.sort_key.get_level(level)
+    }
+}
+
 impl PhaseItem for TransparentUi {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {

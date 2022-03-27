@@ -4,7 +4,6 @@ use crate::{
     PointLight, PointLightShadowMap, SetMeshBindGroup, VisiblePointLights, SHADOW_SHADER_HANDLE,
 };
 use bevy_asset::Handle;
-use bevy_core::FloatOrd;
 use bevy_core_pipeline::Transparent3d;
 use bevy_ecs::{
     prelude::*,
@@ -35,6 +34,7 @@ use bevy_utils::{
     HashMap,
 };
 use std::num::NonZeroU32;
+use rdst::RadixKey;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
 pub enum RenderLightSystems {
@@ -1116,6 +1116,7 @@ pub fn queue_shadows(
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Shadow {
     pub distance: f32,
     pub entity: Entity,
@@ -1123,12 +1124,20 @@ pub struct Shadow {
     pub draw_function: DrawFunctionId,
 }
 
+impl RadixKey for Shadow {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.distance.get_level(level)
+    }
+}
+
 impl PhaseItem for Shadow {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {
-        FloatOrd(self.distance)
+        self.distance
     }
 
     #[inline]

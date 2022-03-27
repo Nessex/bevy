@@ -18,6 +18,7 @@ pub use main_pass_3d::*;
 pub use main_pass_driver::*;
 
 use std::ops::Range;
+use rdst::RadixKey;
 
 use bevy_app::{App, Plugin};
 use bevy_core::FloatOrd;
@@ -36,6 +37,7 @@ use bevy_render::{
     view::{ExtractedView, Msaa, ViewDepthTexture},
     RenderApp, RenderStage, RenderWorld,
 };
+use bevy_render::render_phase::BatchRange;
 
 /// When used as a resource, sets the color that is used to clear the screen between frames.
 ///
@@ -195,17 +197,26 @@ impl Plugin for CorePipelinePlugin {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Transparent2d {
-    pub sort_key: FloatOrd,
+    pub sort_key: f32,
     pub entity: Entity,
     pub pipeline: CachedRenderPipelineId,
     pub draw_function: DrawFunctionId,
     /// Range in the vertex buffer of this item
-    pub batch_range: Option<Range<u32>>,
+    pub batch_range: Option<BatchRange>,
+}
+
+impl RadixKey for Transparent2d {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.sort_key.get_level(level)
+    }
 }
 
 impl PhaseItem for Transparent2d {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {
@@ -233,15 +244,16 @@ impl CachedRenderPipelinePhaseItem for Transparent2d {
 }
 
 impl BatchedPhaseItem for Transparent2d {
-    fn batch_range(&self) -> &Option<Range<u32>> {
+    fn batch_range(&self) -> &Option<BatchRange> {
         &self.batch_range
     }
 
-    fn batch_range_mut(&mut self) -> &mut Option<Range<u32>> {
+    fn batch_range_mut(&mut self) -> &mut Option<BatchRange> {
         &mut self.batch_range
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Opaque3d {
     pub distance: f32,
     pub pipeline: CachedRenderPipelineId,
@@ -249,12 +261,20 @@ pub struct Opaque3d {
     pub draw_function: DrawFunctionId,
 }
 
+impl RadixKey for Opaque3d {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.distance.get_level(level)
+    }
+}
+
 impl PhaseItem for Opaque3d {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {
-        FloatOrd(self.distance)
+        self.distance
     }
 
     #[inline]
@@ -277,6 +297,7 @@ impl CachedRenderPipelinePhaseItem for Opaque3d {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct AlphaMask3d {
     pub distance: f32,
     pub pipeline: CachedRenderPipelineId,
@@ -284,12 +305,20 @@ pub struct AlphaMask3d {
     pub draw_function: DrawFunctionId,
 }
 
+impl RadixKey for AlphaMask3d {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.distance.get_level(level)
+    }
+}
+
 impl PhaseItem for AlphaMask3d {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {
-        FloatOrd(self.distance)
+        self.distance
     }
 
     #[inline]
@@ -312,6 +341,7 @@ impl CachedRenderPipelinePhaseItem for AlphaMask3d {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Transparent3d {
     pub distance: f32,
     pub pipeline: CachedRenderPipelineId,
@@ -319,12 +349,20 @@ pub struct Transparent3d {
     pub draw_function: DrawFunctionId,
 }
 
+impl RadixKey for Transparent3d {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.distance.get_level(level)
+    }
+}
+
 impl PhaseItem for Transparent3d {
-    type SortKey = FloatOrd;
+    type SortKey = f32;
 
     #[inline]
     fn sort_key(&self) -> Self::SortKey {
-        FloatOrd(self.distance)
+        self.distance
     }
 
     #[inline]

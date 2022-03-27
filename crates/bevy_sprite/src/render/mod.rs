@@ -35,6 +35,7 @@ use copyless::VecHelper;
 use fxhash::{FxHasher, FxHashMap};
 use partition::{partition, partition_index};
 use rdst::{RadixKey, RadixSort};
+use bevy_render::render_phase::BatchRange;
 
 pub struct SpritePipeline {
     view_layout: BindGroupLayout,
@@ -607,7 +608,7 @@ pub fn queue_sprites(
                 .into_iter()
                 .chain(color_iter.into_iter())
                 .for_each(|(batch_key, z, pipeline, item_start, item_end)| {
-                    let sort_key = FloatOrd(*z);
+                    let sort_key = *z;
 
                     if let Some((entity, _)) = batch_entities.remove(batch_key) {
                         // TODO(nathan): Not easy to reserve space in transparent_phase for
@@ -617,7 +618,7 @@ pub fn queue_sprites(
                             pipeline,
                             entity,
                             sort_key,
-                            batch_range: Some(item_start..item_end),
+                            batch_range: Some(BatchRange::new(item_start, item_end)),
                         });
                     }
                 });
@@ -706,7 +707,7 @@ impl<P: BatchedPhaseItem> RenderCommand<P> for DrawSpriteBatch {
         } else {
             pass.set_vertex_buffer(0, sprite_meta.vertices.buffer().unwrap().slice(..));
         }
-        pass.draw(item.batch_range().as_ref().unwrap().clone(), 0..1);
+        pass.draw(item.batch_range().as_ref().unwrap().as_range(), 0..1);
         RenderCommandResult::Success
     }
 }

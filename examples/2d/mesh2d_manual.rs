@@ -1,5 +1,4 @@
 use bevy::{
-    core::FloatOrd,
     core_pipeline::Transparent2d,
     prelude::*,
     reflect::TypeUuid,
@@ -336,7 +335,7 @@ pub fn queue_colored_mesh2d(
                     pipeline: pipeline_id,
                     // The 2d render items are sorted according to their z value before rendering,
                     // in order to get correct transparency
-                    sort_key: FloatOrd(mesh_z),
+                    sort_key: mesh_z,
                     // This material is not batched
                     batch_range: None,
                 });
