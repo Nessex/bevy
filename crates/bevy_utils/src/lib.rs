@@ -217,3 +217,36 @@ impl<K: Hash + Eq + PartialEq + Clone, V> PreHashMapExt<K, V> for PreHashMap<K, 
         }
     }
 }
+
+#[derive(Default)]
+pub struct FullPassHasher {
+    val: u64,
+}
+
+impl BuildHasher for FullPassHasher {
+    type Hasher = FullPassHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        Self {
+            val: 0,
+        }
+    }
+}
+
+impl Hasher for FullPassHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.val
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        panic!("can only hash u64 using FullPassHasher");
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.val = i;
+    }
+}
+
+pub type FullPreHashMap<V> = hashbrown::HashMap<u64, V, FullPassHasher>;

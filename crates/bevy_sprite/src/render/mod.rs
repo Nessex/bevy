@@ -1,4 +1,5 @@
-use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Instant;
 
 use crate::{
@@ -13,7 +14,6 @@ use bevy_ecs::{
     system::{lifetimeless::*, SystemParamItem},
 };
 use bevy_math::{const_vec2, Vec2};
-use bevy_reflect::Uuid;
 use bevy_render::{
     color::Color,
     render_asset::RenderAssets,
@@ -28,9 +28,11 @@ use bevy_render::{
     RenderWorld,
 };
 use bevy_transform::components::GlobalTransform;
-use bevy_utils::HashMap;
+use bevy_utils::{FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
+use fxhash::{FxHasher, FxHashMap};
+use partition::{partition, partition_index};
 use rdst::{RadixKey, RadixSort};
 
 pub struct SpritePipeline {
@@ -188,6 +190,14 @@ pub struct ExtractedSprite {
     pub flip_y: bool,
 }
 
+impl RadixKey for ExtractedSprite {
+    const LEVELS: usize = 4;
+
+    fn get_level(&self, level: usize) -> u8 {
+        self.transform.translation.z.get_level(level)
+    }
+}
+
 #[derive(Default)]
 pub struct ExtractedSprites {
     pub sprites: Vec<ExtractedSprite>,
@@ -320,7 +330,7 @@ const QUAD_UVS: [Vec2; 4] = [
     const_vec2!([0., 0.]),
 ];
 
-#[derive(Component, Eq, PartialEq, Copy, Clone)]
+#[derive(Component, Eq, PartialEq, Copy, Clone, Hash)]
 pub struct SpriteBatch {
     image_handle_id: HandleId,
     colored: bool,
@@ -403,125 +413,141 @@ pub fn queue_sprites(
             let extracted_sprites = &mut extracted_sprites.sprites;
             let image_bind_groups = &mut *image_bind_groups;
 
-            transparent_phase.items.reserve(extracted_sprites.len());
-
+            let start = Instant::now();
             // Sort sprites by z for correct transparency and then by handle to improve batching
-            let mut extracted_sprites_sortable: Vec<ExtractedSpriteWithKey> =
-                extracted_sprites.iter().map(|s| {
-                    let mut sort_key = (s.transform.translation.z as u128) << 64;
 
-                    let sort_key_lower = match s.image_handle_id {
-                        HandleId::Id(uuid, id) => {
-                            (uuid.as_u128() as u64) ^ ((uuid.as_u128() >> 64) as u64) ^ id
-                        }
-                        HandleId::AssetPathId(id) => {
-                            id.source_path_id().value() ^ id.label_id().value()
-                        }
+            let mut batch_keys: FullPreHashMap<SpriteBatch> = hashbrown::HashMap::default();
+
+            let hash = Instant::now();
+            let extracted_sprites: Vec<_> = extracted_sprites
+                .into_iter()
+                .map(|extracted_sprite| {
+                    let batch = SpriteBatch {
+                        image_handle_id: extracted_sprite.image_handle_id,
+                        colored: extracted_sprite.color != Color::WHITE,
                     };
 
-                    sort_key |= sort_key_lower as u128;
+                    let mut hasher = FxHasher::default();
 
-                    ExtractedSpriteWithKey(sort_key, s)
-                }).collect();
+                    hasher.write_u32(extracted_sprite.transform.translation.z.to_bits());
+                    batch.hash(&mut hasher);
 
-            extracted_sprites_sortable.sort_unstable_by_key(|s| s.0);
-            //extracted_sprites_sortable.radix_sort_unstable();
+                    let batch_key = hasher.finish();
 
-            // Impossible starting values that will be replaced on the first iteration
-            let mut current_batch = SpriteBatch {
-                image_handle_id: HandleId::Id(Uuid::nil(), u64::MAX),
-                colored: false,
-            };
-            let mut current_batch_entity = Entity::from_raw(u32::MAX);
-            let mut current_image_size = Vec2::ZERO;
-            // Add a phase item for each sprite, and detect when succesive items can be batched.
-            // Spawn an entity with a `SpriteBatch` component for each possible batch.
-            // Compatible items share the same entity.
-            // Batches are merged later (in `batch_phase_system()`), so that they can be interrupted
-            // by any other phase item (and they can interrupt other items from batching).
-            // for extracted_sprite in extracted_sprites.iter() {
-            for ExtractedSpriteWithKey(_, extracted_sprite) in extracted_sprites_sortable.into_iter() {
-                let new_batch = SpriteBatch {
-                    image_handle_id: extracted_sprite.image_handle_id,
-                    colored: extracted_sprite.color != Color::WHITE,
-                };
-                if new_batch != current_batch {
-                    // Set-up a new possible batch
-                    if let Some(gpu_image) =
-                        gpu_images.get(&Handle::weak(new_batch.image_handle_id))
-                    {
-                        current_batch = new_batch;
-                        current_image_size = Vec2::new(gpu_image.size.width, gpu_image.size.height);
-                        current_batch_entity = commands.spawn_bundle((current_batch,)).id();
+                    batch_keys.insert(batch_key, batch);
 
-                        image_bind_groups
-                            .values
-                            .entry(Handle::weak(current_batch.image_handle_id))
-                            .or_insert_with(|| {
-                                render_device.create_bind_group(&BindGroupDescriptor {
-                                    entries: &[
-                                        BindGroupEntry {
-                                            binding: 0,
-                                            resource: BindingResource::TextureView(
-                                                &gpu_image.texture_view,
-                                            ),
-                                        },
-                                        BindGroupEntry {
-                                            binding: 1,
-                                            resource: BindingResource::Sampler(&gpu_image.sampler),
-                                        },
-                                    ],
-                                    label: Some("sprite_material_bind_group"),
-                                    layout: &sprite_pipeline.material_layout,
-                                })
-                            });
-                    } else {
-                        // Skip this item if the texture is not ready
-                        continue;
-                    }
-                }
+                    (batch_key, extracted_sprite)
+                })
+                .collect();
+            println!("Hash: {}us", hash.elapsed().as_micros());
 
-                // Calculate vertex data for this item
+            let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::default();
 
-                let mut uvs = QUAD_UVS;
-                if extracted_sprite.flip_x {
-                    uvs = [uvs[1], uvs[0], uvs[3], uvs[2]];
-                }
-                if extracted_sprite.flip_y {
-                    uvs = [uvs[3], uvs[2], uvs[1], uvs[0]];
-                }
+            let spawn_batches = Instant::now();
+            batch_keys
+                .into_iter()
+                .map(|(k, batch)| {
+                    let image = gpu_images
+                        .get(&Handle::weak(batch.image_handle_id))
+                        .map(|gpu_image| {
+                            let size = Vec2::new(gpu_image.size.width, gpu_image.size.height);
+                            let entity = commands.spawn_bundle((batch,)).id();
 
-                // By default, the size of the quad is the size of the texture
-                let mut quad_size = current_image_size;
+                            image_bind_groups
+                                .values
+                                .entry(Handle::weak(batch.image_handle_id))
+                                .or_insert_with(|| {
+                                    render_device.create_bind_group(&BindGroupDescriptor {
+                                        entries: &[
+                                            BindGroupEntry {
+                                                binding: 0,
+                                                resource: BindingResource::TextureView(
+                                                    &gpu_image.texture_view,
+                                                ),
+                                            },
+                                            BindGroupEntry {
+                                                binding: 1,
+                                                resource: BindingResource::Sampler(&gpu_image.sampler),
+                                            },
+                                        ],
+                                        label: Some("sprite_material_bind_group"),
+                                        layout: &sprite_pipeline.material_layout,
+                                    })
+                                });
 
-                // If a rect is specified, adjust UVs and the size of the quad
-                if let Some(rect) = extracted_sprite.rect {
-                    let rect_size = rect.size();
-                    for uv in &mut uvs {
-                        *uv = (rect.min + *uv * rect_size) / current_image_size;
-                    }
-                    quad_size = rect_size;
-                }
+                            (entity, size)
+                        });
 
-                // Override the size if a custom one is specified
-                if let Some(custom_size) = extracted_sprite.custom_size {
-                    quad_size = custom_size;
-                }
-
-                // Apply size and global transform
-                let positions = QUAD_VERTEX_POSITIONS.map(|quad_pos| {
-                    extracted_sprite
-                        .transform
-                        .mul_vec3((quad_pos * quad_size).extend(0.))
-                        .into()
+                    (k, image)
+                })
+                .filter_map(|(k, gpu_image)| gpu_image.map(|i| (k, i)))
+                .for_each(|(k, img)| {
+                    batch_entities.insert(k, img);
                 });
 
-                // These items will be sorted by depth with other phase items
-                let sort_key = FloatOrd(extracted_sprite.transform.translation.z);
+            println!("Spawn batches: {}us", spawn_batches.elapsed().as_micros());
 
-                // Store the vertex data and add the item to the render phase
-                if current_batch.colored {
-                    let color = extracted_sprite.color.as_linear_rgba_f32();
+            let uv_pos = Instant::now();
+
+            // Extract UVs and positions for each sprite
+            let mut extracted_sprites: Vec<_> = extracted_sprites
+                .into_iter()
+                .filter_map(|(batch_key, extracted_sprite)| {
+                    batch_entities.get(&batch_key)
+                        .map(|(_, image_size)| {
+                            let mut uvs = QUAD_UVS;
+                            if extracted_sprite.flip_x {
+                                uvs = [uvs[1], uvs[0], uvs[3], uvs[2]];
+                            }
+                            if extracted_sprite.flip_y {
+                                uvs = [uvs[3], uvs[2], uvs[1], uvs[0]];
+                            }
+
+                            let quad_size = if let Some(custom_size) = extracted_sprite.custom_size {
+                                // Override the size if a custom one is specified
+                                custom_size
+                            } else if let Some(rect) = extracted_sprite.rect {
+                                // If a rect is specified, adjust UVs and the size of the quad
+                                let rect_size = rect.size();
+                                for uv in &mut uvs {
+                                    *uv = (rect.min + *uv * rect_size) / *image_size;
+                                }
+                                rect_size
+                            } else {
+                                // By default, the size of the quad is the size of the texture
+                                *image_size
+                            };
+
+                            // Apply size and global transform
+                            let positions = QUAD_VERTEX_POSITIONS.map(|quad_pos| {
+                                extracted_sprite
+                                    .transform
+                                    .mul_vec3((quad_pos * quad_size).extend(0.))
+                                    .into()
+                            });
+
+                            let z = extracted_sprite.transform.translation.z;
+
+                            (batch_key, z, extracted_sprite.color, uvs, positions)
+                        })
+                })
+                .collect();
+
+            println!("UV / Pos: {}us", uv_pos.elapsed().as_micros());
+
+            transparent_phase.items.reserve(extracted_sprites.len());
+
+            let part = Instant::now();
+            // Partition sprites into colored / non-colored vertices
+            let (color, no_color) = partition(&mut extracted_sprites, |(_, _, color, _, _)| *color != Color::WHITE);
+            println!("Partition: {}us", part.elapsed().as_micros());
+
+            // Submit colored vertices
+            let submit_color = Instant::now();
+            let color_vertices: Vec<_> = color
+                .into_iter()
+                .map(|(batch_key, z, color, uvs, positions)| {
+                    let color = color.as_linear_rgba_f32();
                     // encode color as a single u32 to save space
                     let color = (color[0] * 255.0) as u32
                         | ((color[1] * 255.0) as u32) << 8
@@ -538,14 +564,17 @@ pub fn queue_sprites(
                     colored_index += QUAD_INDICES.len() as u32;
                     let item_end = colored_index;
 
-                    transparent_phase.add(Transparent2d {
-                        draw_function: draw_sprite_function,
-                        pipeline: colored_pipeline,
-                        entity: current_batch_entity,
-                        sort_key,
-                        batch_range: Some(item_start..item_end),
-                    });
-                } else {
+                    (batch_key, z, colored_pipeline, item_start, item_end)
+                })
+                .collect();
+
+            println!("Submit color: {}us", submit_color.elapsed().as_micros());
+
+            // Submit non-colored vertices
+            let submit_no_color = Instant::now();
+            let no_color_vertices: Vec<_> = no_color
+                .into_iter()
+                .map(|(batch_key, z, _, uvs, positions)| {
                     for i in QUAD_INDICES.iter() {
                         sprite_meta.vertices.push(SpriteVertex {
                             position: positions[*i],
@@ -556,15 +585,37 @@ pub fn queue_sprites(
                     index += QUAD_INDICES.len() as u32;
                     let item_end = index;
 
-                    transparent_phase.add(Transparent2d {
-                        draw_function: draw_sprite_function,
-                        pipeline,
-                        entity: current_batch_entity,
-                        sort_key,
-                        batch_range: Some(item_start..item_end),
-                    });
-                }
-            }
+                    (batch_key, z, pipeline, item_start, item_end)
+                })
+                .collect();
+            println!("Submit no color: {}us", submit_no_color.elapsed().as_micros());
+
+            let phase_add = Instant::now();
+            no_color_vertices
+                .into_iter()
+                .chain(color_vertices.into_iter())
+                .for_each(|(batch_key, z, pipeline, item_start, item_end)| {
+                    let sort_key = FloatOrd(*z);
+
+                    if let Some((entity, _)) = batch_entities.remove(batch_key) {
+                        // TODO(nathan): Not easy to reserve space in transparent_phase for
+                        // entities which have an image ready.
+                        transparent_phase.add(Transparent2d {
+                            draw_function: draw_sprite_function,
+                            pipeline,
+                            entity,
+                            sort_key,
+                            batch_range: Some(item_start..item_end),
+                        });
+                    }
+                });
+            println!("Phase add: {}us", phase_add.elapsed().as_micros());
+
+            // extracted_sprites.sort_unstable_by_key(|s| s.transform.translation.z);
+            // extracted_sprites.radix_sort_unstable();
+
+            println!("ELP: {}us", start.elapsed().as_micros());
+            println!("-------");
         }
         sprite_meta
             .vertices
