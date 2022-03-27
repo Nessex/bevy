@@ -1,3 +1,4 @@
+use std::borrow::BorrowMut;
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Instant;
@@ -28,7 +29,7 @@ use bevy_render::{
     RenderWorld,
 };
 use bevy_transform::components::GlobalTransform;
-use bevy_utils::{FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
+use bevy_utils::{FullPassHasher, FullPreHashMap, hashbrown, Hashed, HashMap, PassHasher, PreHashMap};
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
 use fxhash::{FxHasher, FxHashMap};
@@ -304,6 +305,15 @@ pub struct SpriteMeta {
     view_bind_group: Option<BindGroup>,
 }
 
+impl SpriteMeta {
+    fn buffers_mut(&mut self) -> (&mut BufferVec<SpriteVertex>, &mut BufferVec<ColoredSpriteVertex>) {
+        (
+            &mut self.vertices,
+            &mut self.colored_vertices,
+        )
+    }
+}
+
 impl Default for SpriteMeta {
     fn default() -> Self {
         Self {
@@ -416,7 +426,7 @@ pub fn queue_sprites(
             let start = Instant::now();
             // Sort sprites by z for correct transparency and then by handle to improve batching
 
-            let mut batch_keys: FullPreHashMap<SpriteBatch> = hashbrown::HashMap::default();
+            let mut batch_keys: FullPreHashMap<SpriteBatch> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
 
             let hash = Instant::now();
             let extracted_sprites: Vec<_> = extracted_sprites
@@ -441,7 +451,7 @@ pub fn queue_sprites(
                 .collect();
             println!("Hash: {}us", hash.elapsed().as_micros());
 
-            let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::default();
+            let mut batch_entities: FullPreHashMap<(_, _)> = hashbrown::HashMap::with_capacity_and_hasher(extracted_sprites.len(), FullPassHasher::default());
 
             let spawn_batches = Instant::now();
             batch_keys
@@ -480,9 +490,10 @@ pub fn queue_sprites(
 
                     (k, image)
                 })
-                .filter_map(|(k, gpu_image)| gpu_image.map(|i| (k, i)))
                 .for_each(|(k, img)| {
-                    batch_entities.insert(k, img);
+                    if let Some(img) = img {
+                        batch_entities.insert(k, img);
+                    }
                 });
 
             println!("Spawn batches: {}us", spawn_batches.elapsed().as_micros());
@@ -490,10 +501,12 @@ pub fn queue_sprites(
             let uv_pos = Instant::now();
 
             // Extract UVs and positions for each sprite
-            let mut extracted_sprites: Vec<_> = extracted_sprites
+            let mut new_extracted_sprites = Vec::with_capacity(extracted_sprites.len());
+            extracted_sprites
                 .into_iter()
-                .filter_map(|(batch_key, extracted_sprite)| {
-                    batch_entities.get(&batch_key)
+                .for_each(|(batch_key, extracted_sprite)| {
+                    let _ = batch_entities
+                        .get(&batch_key)
                         .map(|(_, image_size)| {
                             let mut uvs = QUAD_UVS;
                             if extracted_sprite.flip_x {
@@ -528,23 +541,24 @@ pub fn queue_sprites(
 
                             let z = extracted_sprite.transform.translation.z;
 
-                            (batch_key, z, extracted_sprite.color, uvs, positions)
-                        })
-                })
-                .collect();
+                            new_extracted_sprites.push((batch_key, z, extracted_sprite.color, uvs, positions));
+                        });
+                });
 
             println!("UV / Pos: {}us", uv_pos.elapsed().as_micros());
 
-            transparent_phase.items.reserve(extracted_sprites.len());
+            transparent_phase.items.reserve(new_extracted_sprites.len());
 
             let part = Instant::now();
             // Partition sprites into colored / non-colored vertices
-            let (color, no_color) = partition(&mut extracted_sprites, |(_, _, color, _, _)| *color != Color::WHITE);
+            let (color, no_color) = partition(&mut new_extracted_sprites, |(_, _, color, _, _)| *color != Color::WHITE);
             println!("Partition: {}us", part.elapsed().as_micros());
+
+            let (verts, color_verts) = sprite_meta.buffers_mut();
 
             // Submit colored vertices
             let submit_color = Instant::now();
-            let color_vertices: Vec<_> = color
+            let color_iter = color
                 .into_iter()
                 .map(|(batch_key, z, color, uvs, positions)| {
                     let color = color.as_linear_rgba_f32();
@@ -554,7 +568,7 @@ pub fn queue_sprites(
                         | ((color[2] * 255.0) as u32) << 16
                         | ((color[3] * 255.0) as u32) << 24;
                     for i in QUAD_INDICES.iter() {
-                        sprite_meta.colored_vertices.push(ColoredSpriteVertex {
+                        color_verts.push(ColoredSpriteVertex {
                             position: positions[*i],
                             uv: uvs[*i].into(),
                             color,
@@ -565,18 +579,17 @@ pub fn queue_sprites(
                     let item_end = colored_index;
 
                     (batch_key, z, colored_pipeline, item_start, item_end)
-                })
-                .collect();
+                });
 
             println!("Submit color: {}us", submit_color.elapsed().as_micros());
 
             // Submit non-colored vertices
             let submit_no_color = Instant::now();
-            let no_color_vertices: Vec<_> = no_color
+            let no_color_iter = no_color
                 .into_iter()
                 .map(|(batch_key, z, _, uvs, positions)| {
                     for i in QUAD_INDICES.iter() {
-                        sprite_meta.vertices.push(SpriteVertex {
+                        verts.push(SpriteVertex {
                             position: positions[*i],
                             uv: uvs[*i].into(),
                         });
@@ -586,14 +599,13 @@ pub fn queue_sprites(
                     let item_end = index;
 
                     (batch_key, z, pipeline, item_start, item_end)
-                })
-                .collect();
+                });
             println!("Submit no color: {}us", submit_no_color.elapsed().as_micros());
 
             let phase_add = Instant::now();
-            no_color_vertices
+            no_color_iter
                 .into_iter()
-                .chain(color_vertices.into_iter())
+                .chain(color_iter.into_iter())
                 .for_each(|(batch_key, z, pipeline, item_start, item_end)| {
                     let sort_key = FloatOrd(*z);
 
