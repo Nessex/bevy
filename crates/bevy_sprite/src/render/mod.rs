@@ -503,8 +503,8 @@ pub fn queue_sprites(
                 .zip(batch_keys.into_iter())
                 .for_each(|(extracted_sprite, batch_key)| {
                     let _ = batch_entities
-                        .get(&batch_key)
-                        .map(|(_, image_size)| {
+                        .remove(&batch_key)
+                        .map(|(entity, image_size)| {
                             let mut uvs = QUAD_UVS;
                             if extracted_sprite.flip_x {
                                 uvs = [uvs[1], uvs[0], uvs[3], uvs[2]];
@@ -520,12 +520,12 @@ pub fn queue_sprites(
                                 // If a rect is specified, adjust UVs and the size of the quad
                                 let rect_size = rect.size();
                                 for uv in &mut uvs {
-                                    *uv = (rect.min + *uv * rect_size) / *image_size;
+                                    *uv = (rect.min + *uv * rect_size) / image_size;
                                 }
                                 rect_size
                             } else {
                                 // By default, the size of the quad is the size of the texture
-                                *image_size
+                                image_size
                             };
 
                             // Apply size and global transform
@@ -538,7 +538,7 @@ pub fn queue_sprites(
 
                             let z = extracted_sprite.transform.translation.z;
 
-                            new_extracted_sprites.push((batch_key, z, extracted_sprite.color, uvs, positions));
+                            new_extracted_sprites.push((entity, z, extracted_sprite.color, uvs, positions));
                         });
                 });
 
@@ -557,7 +557,7 @@ pub fn queue_sprites(
             let submit_color = Instant::now();
             let color_iter = color
                 .into_iter()
-                .map(|(batch_key, z, color, uvs, positions)| {
+                .map(|(entity, z, color, uvs, positions)| {
                     let color = color.as_linear_rgba_f32();
                     // encode color as a single u32 to save space
                     let color = (color[0] * 255.0) as u32
@@ -575,7 +575,7 @@ pub fn queue_sprites(
                     colored_index += QUAD_INDICES.len() as u32;
                     let item_end = colored_index;
 
-                    (batch_key, z, colored_pipeline, item_start, item_end)
+                    (entity, z, colored_pipeline, item_start, item_end)
                 });
 
             println!("Submit color: {}us", submit_color.elapsed().as_micros());
@@ -584,7 +584,7 @@ pub fn queue_sprites(
             let submit_no_color = Instant::now();
             let no_color_iter = no_color
                 .into_iter()
-                .map(|(batch_key, z, _, uvs, positions)| {
+                .map(|(entity, z, _, uvs, positions)| {
                     for i in QUAD_INDICES.iter() {
                         verts.push(SpriteVertex {
                             position: positions[*i],
@@ -595,27 +595,23 @@ pub fn queue_sprites(
                     index += QUAD_INDICES.len() as u32;
                     let item_end = index;
 
-                    (batch_key, z, pipeline, item_start, item_end)
+                    (entity, z, pipeline, item_start, item_end)
                 });
             println!("Submit no color: {}us", submit_no_color.elapsed().as_micros());
 
             let phase_add = Instant::now();
             no_color_iter
                 .chain(color_iter)
-                .for_each(|(batch_key, z, pipeline, item_start, item_end)| {
-                    let sort_key = *z;
-
-                    if let Some((entity, _)) = batch_entities.remove(batch_key) {
-                        // TODO(nathan): Not easy to reserve space in transparent_phase for
-                        // entities which have an image ready.
-                        transparent_phase.add(Transparent2d {
-                            draw_function: draw_sprite_function,
-                            pipeline,
-                            entity,
-                            sort_key,
-                            batch_range: Some(BatchRange::new(item_start, item_end)),
-                        });
-                    }
+                .for_each(|(entity, z, pipeline, item_start, item_end)| {
+                    // TODO(nathan): Not easy to reserve space in transparent_phase for
+                    // entities which have an image ready.
+                    transparent_phase.add(Transparent2d {
+                        draw_function: draw_sprite_function,
+                        pipeline,
+                        entity: *entity,
+                        sort_key: *z,
+                        batch_range: Some(BatchRange::new(item_start, item_end)),
+                    });
                 });
             println!("Phase add: {}us", phase_add.elapsed().as_micros());
 
