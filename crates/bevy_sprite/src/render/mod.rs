@@ -34,6 +34,7 @@ use bevy_utils::{FullPassHasher, FullPreHashMap, hashbrown, Hashed, HashMap, Pas
 use bytemuck::{Pod, Zeroable};
 use copyless::VecHelper;
 use partition::{partition, partition_index};
+use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
 use bevy_render::render_phase::BatchRange;
 
@@ -429,7 +430,7 @@ pub fn queue_sprites(
 
             let hash = Instant::now();
             let batch_keys: Vec<_> = extracted_sprites
-                .iter()
+                .par_iter()
                 .map(|extracted_sprite| {
                     let batch = SpriteBatch {
                         image_handle_id: extracted_sprite.image_handle_id,
@@ -504,13 +505,12 @@ pub fn queue_sprites(
             let uv_pos = Instant::now();
 
             // Extract UVs and positions for each sprite
-            let mut new_extracted_sprites = Vec::with_capacity(extracted_sprites.len());
-            extracted_sprites
-                .into_iter()
-                .zip(batch_keys.into_iter())
-                .for_each(|(extracted_sprite, batch_key)| {
-                    let _ = batch_entities
-                        .remove(&batch_key)
+            let mut new_extracted_sprites: Vec<_> = extracted_sprites
+                .into_par_iter()
+                .zip(batch_keys.into_par_iter())
+                .filter_map(|(extracted_sprite, batch_key)| {
+                    batch_entities
+                        .get(&batch_key)
                         .map(|(entity, image_size)| {
                             let mut uvs = QUAD_UVS;
                             if extracted_sprite.flip_x {
@@ -527,12 +527,12 @@ pub fn queue_sprites(
                                 // If a rect is specified, adjust UVs and the size of the quad
                                 let rect_size = rect.size();
                                 for uv in &mut uvs {
-                                    *uv = (rect.min + *uv * rect_size) / image_size;
+                                    *uv = (rect.min + *uv * rect_size) / *image_size;
                                 }
                                 rect_size
                             } else {
                                 // By default, the size of the quad is the size of the texture
-                                image_size
+                                *image_size
                             };
 
                             // Apply size and global transform
@@ -545,9 +545,10 @@ pub fn queue_sprites(
 
                             let z = extracted_sprite.transform.translation.z;
 
-                            new_extracted_sprites.push((entity, z, extracted_sprite.color, uvs, positions));
-                        });
-                });
+                            (*entity, z, extracted_sprite.color, uvs, positions)
+                        })
+                })
+                .collect();
 
             println!("UV / Pos: {}us", uv_pos.elapsed().as_micros());
 

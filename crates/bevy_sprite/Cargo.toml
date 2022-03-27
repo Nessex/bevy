@@ -36,3 +36,4 @@ rdst = { version = "0.20.1", default-features = false }
 partition = "0.1.2"
 ahash = "0.7.0"
 intmap = "0.7.1"
+rayon = "1.5.1"
